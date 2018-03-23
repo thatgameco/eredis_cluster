@@ -3,11 +3,11 @@
 
 %% API.
 -export([start_link/0]).
--export([connect/1]).
--export([refresh_mapping/1]).
--export([get_state/0, get_state_version/1]).
--export([get_pool_by_slot/1, get_pool_by_slot/2]).
--export([get_all_pools/0]).
+-export([connect/2]).
+-export([refresh_mapping/2]).
+-export([get_state/1, get_state_version/1]).
+-export([get_pool_by_slot/3]).
+-export([get_all_pools/1]).
 
 %% gen_server.
 -export([init/1]).
@@ -20,6 +20,7 @@
 %% Type definition.
 -include("eredis_cluster.hrl").
 -record(state, {
+    cluster_name :: atom(),
     init_nodes :: [#node{}],
     slots :: tuple(), %% whose elements are integer indexes into slots_maps
     slots_maps :: tuple(), %% whose elements are #slots_map{}
@@ -31,11 +32,11 @@
 start_link() ->
     gen_server:start_link({local,?MODULE}, ?MODULE, [], []).
 
-connect(InitServers) ->
-    gen_server:call(?MODULE,{connect,InitServers}).
+connect(ClusterName, InitServers) ->
+    gen_server:call(?MODULE,{connect, ClusterName, InitServers}).
 
-refresh_mapping(Version) ->
-    gen_server:call(?MODULE,{reload_slots_map,Version}).
+refresh_mapping(ClusterName, Version) ->
+    gen_server:call(?MODULE,{reload_slots_map, ClusterName, Version}).
 
 %% =============================================================================
 %% @doc Given a slot return the link (Redis instance) to the mapped
@@ -43,17 +44,17 @@ refresh_mapping(Version) ->
 %% @end
 %% =============================================================================
 
--spec get_state() -> #state{}.
-get_state() ->
-    [{cluster_state, State}] = ets:lookup(?MODULE, cluster_state),
+-spec get_state(ClusterName::atom()) -> #state{}.
+get_state(ClusterName) ->
+    [{{ClusterName, cluster_state}, State}] = ets:lookup(?MODULE, {ClusterName, cluster_state}),
     State.
 
 get_state_version(State) ->
     State#state.version.
 
--spec get_all_pools() -> [pid()].
-get_all_pools() ->
-    State = get_state(),
+-spec get_all_pools(ClusterName::atom()) -> [pid()].
+get_all_pools(ClusterName) ->
+    State = get_state(ClusterName),
     SlotsMapList = tuple_to_list(State#state.slots_maps),
     [SlotsMap#slots_map.node#node.pool || SlotsMap <- SlotsMapList,
         SlotsMap#slots_map.node =/= undefined].
@@ -63,9 +64,9 @@ get_all_pools() ->
 %% to prevent from querying ets inside loops.
 %% @end
 %% =============================================================================
--spec get_pool_by_slot(Slot::integer(), State::#state{}) ->
+-spec get_pool_by_slot(atom(), #state{} | atom(), Slot::integer()) ->
     {PoolName::atom() | undefined, Version::integer()}.
-get_pool_by_slot(Slot, State) -> 
+get_pool_by_slot(state, State, Slot) -> 
     Index = element(Slot+1,State#state.slots),
     Cluster = element(Index,State#state.slots_maps),
     if
@@ -73,13 +74,11 @@ get_pool_by_slot(Slot, State) ->
             {Cluster#slots_map.node#node.pool, State#state.version};
         true ->
             {undefined, State#state.version}
-    end.
+    end;
 
--spec get_pool_by_slot(Slot::integer()) ->
-    {PoolName::atom() | undefined, Version::integer()}.
-get_pool_by_slot(Slot) ->
-    State = get_state(),
-    get_pool_by_slot(Slot, State).
+get_pool_by_slot(cluster_name, ClusterName, Slot) ->
+    State = get_state(ClusterName),
+    get_pool_by_slot(state, State, Slot).
 
 -spec reload_slots_map(State::#state{}) -> NewState::#state{}.
 reload_slots_map(State) ->
@@ -92,13 +91,15 @@ reload_slots_map(State) ->
     ConnectedSlotsMaps = connect_all_slots(SlotsMaps),
     Slots = create_slots_cache(ConnectedSlotsMaps),
 
+    ClusterName = State#state.cluster_name,
     NewState = State#state{
         slots = list_to_tuple(Slots),
         slots_maps = list_to_tuple(ConnectedSlotsMaps),
-        version = State#state.version + 1
+        version = State#state.version + 1,
+        cluster_name = ClusterName
     },
 
-    true = ets:insert(?MODULE, [{cluster_state, NewState}]),
+    true = ets:insert(?MODULE, [{{ClusterName, cluster_state}, NewState}]),
 
     NewState.
 
@@ -199,15 +200,16 @@ connect_all_slots(SlotsMapList) ->
     [SlotsMap#slots_map{node=connect_node(SlotsMap#slots_map.node)}
         || SlotsMap <- SlotsMapList].
 
--spec connect_([{Address::string(), Port::integer()}]) -> #state{}.
-connect_([]) ->
-    #state{};
-connect_(InitNodes) ->
+-spec connect_(ClusterName::atom(), [{Address::string(), Port::integer()}]) -> #state{}.
+connect_(ClusterName, []) ->
+    #state{cluster_name = ClusterName};
+connect_(ClusterName, InitNodes) ->
     State = #state{
         slots = undefined,
         slots_maps = {},
         init_nodes = [#node{address = A, port = P} || {A,P} <- InitNodes],
-        version = 0
+        version = 0,
+        cluster_name = ClusterName
     },
 
     reload_slots_map(State).
@@ -216,15 +218,21 @@ connect_(InitNodes) ->
 
 init(_Args) ->
     ets:new(?MODULE, [protected, set, named_table, {read_concurrency, true}]),
-    InitNodes = application:get_env(eredis_cluster, init_nodes, []),
-    {ok, connect_(InitNodes)}.
+    {ok, #{}}.
 
-handle_call({reload_slots_map,Version}, _From, #state{version=Version} = State) ->
-    {reply, ok, reload_slots_map(State)};
-handle_call({reload_slots_map,_}, _From, State) ->
-    {reply, ok, State};
-handle_call({connect, InitServers}, _From, _State) ->
-    {reply, ok, connect_(InitServers)};
+handle_call({reload_slots_map, ClusterName, Version}, _From, ClusterStates) ->
+    case maps:find(ClusterName, ClusterStates) of
+        {ok, State} when Version == State#state.version -> 
+            NewState = reload_slots_map(State),
+            {reply, ok, maps:update(ClusterName, NewState, ClusterStates)};
+        {ok, _} -> 
+            {reply, ok, ClusterStates};
+        _ ->
+            {reply, {error, ClusterName, "Not Connected"}, ClusterStates}
+    end;
+handle_call({connect, ClusterName, InitServers}, _From, ClusterStates) ->
+    NewState = connect_(ClusterName, InitServers),
+    {reply, ok, maps:put(ClusterName, NewState, ClusterStates)};
 handle_call(_Request, _From, State) ->
     {reply, ignored, State}.
 
