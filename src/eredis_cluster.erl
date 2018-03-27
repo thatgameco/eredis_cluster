@@ -311,26 +311,49 @@ optimistic_locking_transaction(ClusterName, WatchedKey, GetCommand, UpdateFuncti
 %% @doc Eval command helper, to optimize the query, it will try to execute the
 %% script using its hashed value. If no script is found, it will load it and
 %% try again.
+%% It uses the first key to decide which node to run the script on. If Keys are
+%% empty it'll connect to a random node. 
+%% If ScriptHash is undefined, it'll load it and return the hash value. 
 %% @end
 %% =============================================================================
--spec eval(ClusterName::atom(), bitstring(), bitstring(), [bitstring()], [bitstring()]) ->
-    redis_result().
+-spec eval(ClusterName::atom(), Script::bitstring(), ScriptHash::bitstring(), Keys::[bitstring()], Args::[bitstring()]) ->
+    {ScriptHash::(unchanged | bitstring()), redis_result()}.
 eval(ClusterName, Script, ScriptHash, Keys, Args) ->
     KeyNb = length(Keys),
-    EvalShaCommand = ["EVALSHA", ScriptHash, KeyNb] ++ Keys ++ Args,
-    Key = if
-        KeyNb == 0 -> "A"; %Random key
+    LoadCommand = ["SCRIPT", "LOAD", Script],
+    PoolKey = if
+        KeyNb == 0 -> random_key(8); %Random key
         true -> hd(Keys)
     end,
 
-    case qk(ClusterName, EvalShaCommand, Key) of
-        {error, <<"NOSCRIPT", _/binary>>} ->
-            LoadCommand = ["SCRIPT", "LOAD", Script],
-            [_, Result] = qk(ClusterName, [LoadCommand, EvalShaCommand], Key),
-            Result;
-        Result ->
-            Result
+    EvalShaCommand = fun(Hash) ->
+        ["EVALSHA", Hash, KeyNb] ++ Keys ++ Args
+    end,
+
+    LoadAndEval = fun() ->
+        case qk(ClusterName, LoadCommand, PoolKey) of
+            {ok, NewScriptHash} ->
+                Result = qk(ClusterName, EvalShaCommand(NewScriptHash), PoolKey),
+                {NewScriptHash, Result};
+            {error, Reason} ->
+                {undefined, {error, Reason}}
+        end
+    end,
+
+    case ScriptHash of
+        undefined -> LoadAndEval();
+        S -> 
+            case qk(ClusterName, EvalShaCommand(S), PoolKey) of
+                {error, <<"NOSCRIPT", _/binary>>} ->
+                    LoadAndEval();
+                Result ->
+                    {unchanged, Result}
+            end
     end.
+
+random_key(N) -> 
+    % Random characters from ' ' to 'z'; the hashtag indicator '{' (123) '}' (125) not included. 
+    [crypto:rand_uniform(40, 172) || _ <- lists:seq(1,N)]. 
 
 %% =============================================================================
 %% @doc Perform a given query on all node of a redis cluster
