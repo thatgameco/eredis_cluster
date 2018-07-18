@@ -22,15 +22,18 @@
 
 -include("eredis_cluster.hrl").
 
+% Application callback
 -spec start(StartType::application:start_type(), StartArgs::term()) ->
     {ok, pid()}.
 start(_Type, _Args) ->
     eredis_cluster_sup:start_link().
 
+% Application callback
 -spec stop(State::term()) -> ok.
 stop(_State) ->
     ok.
 
+% Convenient function for starting the application
 -spec start() -> ok | {error, Reason::term()}.
 start() ->
     application:start(?MODULE).

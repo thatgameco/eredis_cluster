@@ -44,10 +44,12 @@ refresh_mapping(ClusterName, Version) ->
 %% @end
 %% =============================================================================
 
--spec get_state(ClusterName::atom()) -> #state{}.
+-spec get_state(ClusterName::atom()) -> #state{} | {error, Reason::atom()}.
 get_state(ClusterName) ->
-    [{{ClusterName, cluster_state}, State}] = ets:lookup(?MODULE, {ClusterName, cluster_state}),
-    State.
+    case ets:lookup(?MODULE, {ClusterName, cluster_state}) of
+        [] -> {error, empty_state};
+        [{{ClusterName, cluster_state}, State}] -> State
+    end.
 
 get_state_version(State) ->
     State#state.version.
@@ -65,17 +67,19 @@ get_all_pools(ClusterName) ->
 %% @end
 %% =============================================================================
 -spec get_pool_by_slot(atom(), #state{} | atom(), Slot::integer()) ->
-    {PoolName::atom() | undefined, Version::integer()}.
+    {PoolName::atom() | undefined | {error, Reason::atom()}, Version::integer()}.
 get_pool_by_slot(state, State, Slot) -> 
-    Index = element(Slot+1,State#state.slots),
-    Cluster = element(Index,State#state.slots_maps),
-    if
-        Cluster#slots_map.node =/= undefined ->
-            {Cluster#slots_map.node#node.pool, State#state.version};
-        true ->
-            {undefined, State#state.version}
+    case State of
+        S when is_record(S, state) ->
+            Index = element(Slot+1,State#state.slots),
+            Cluster = element(Index,State#state.slots_maps),
+            case Cluster#slots_map.node of 
+                Node when is_record(Node, node) -> {Node#node.pool, State#state.version};
+                _ -> {undefined, State#state.version}
+            end;
+        {error, Reason} ->
+            {undefined, {error, Reason}, 0}
     end;
-
 get_pool_by_slot(cluster_name, ClusterName, Slot) ->
     State = get_state(ClusterName),
     get_pool_by_slot(state, State, Slot).
@@ -218,7 +222,21 @@ connect_(ClusterName, InitNodes) ->
 
 init(_Args) ->
     ets:new(?MODULE, [protected, set, named_table, {read_concurrency, true}]),
-    {ok, #{}}.
+
+    InitNodes = application:get_env(eredis_cluster, init_nodes, []),
+
+    try 
+        ClusterStatesList = lists:map(fun({ClusterName, InitServer}) -> 
+            {ClusterName, connect_(ClusterName, [InitServer])}
+        end, InitNodes),
+        {ok, maps:from_list(ClusterStatesList)}
+    catch 
+        {error,cannot_connect_to_cluster} -> 
+            % Do not crash and retry immediately; instead, wait for couple seconds for the cluster to recover
+            RetryInterval = application:get_env(eredis_cluster, retry_interval_ms, 3000),
+            timer:sleep(RetryInterval),
+            {stop, cannot_connect_to_cluster}
+    end.
 
 handle_call({reload_slots_map, ClusterName, Version}, _From, ClusterStates) ->
     case maps:find(ClusterName, ClusterStates) of
@@ -228,11 +246,12 @@ handle_call({reload_slots_map, ClusterName, Version}, _From, ClusterStates) ->
         {ok, _} -> 
             {reply, ok, ClusterStates};
         _ ->
-            {reply, {error, ClusterName, "Not Connected"}, ClusterStates}
+            {reply, {error, ClusterName, not_connected}, ClusterStates}
     end;
 handle_call({connect, ClusterName, InitServers}, _From, ClusterStates) ->
     NewState = connect_(ClusterName, InitServers),
     {reply, ok, maps:put(ClusterName, NewState, ClusterStates)};
+
 handle_call(_Request, _From, State) ->
     {reply, ignored, State}.
 
