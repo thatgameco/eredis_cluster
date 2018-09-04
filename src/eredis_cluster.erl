@@ -98,10 +98,15 @@ qmn(ClusterName, Commands, Counter) ->
     %% Throttle retries
     throttle_retries(Counter),
 
-    {CommandsByPools, MappingInfo, Version} = split_by_pools(ClusterName, Commands),
-    case qmn2(ClusterName, CommandsByPools, MappingInfo, [], Version) of
-        retry -> qmn(ClusterName, Commands, Counter + 1);
-        Res -> Res
+    case split_by_pools(ClusterName, Commands) of
+        {CommandsByPools, MappingInfo, Version} ->
+            case qmn2(ClusterName, CommandsByPools, MappingInfo, [], Version) of
+                retry -> qmn(ClusterName, Commands, Counter + 1);
+                Res -> Res
+            end;
+        {retry, Version} ->
+            eredis_cluster_monitor:refresh_mapping(ClusterName, Version),
+            qmn(ClusterName, Commands, Counter + 1)
     end.
 
 qmn2(ClusterName, [{Pool, PoolCommands} | T1], [{Pool, Mapping} | T2], Acc, Version) ->
@@ -128,20 +133,26 @@ split_by_pools(ClusterName, Commands) ->
 split_by_pools([Command | T], Index, CmdAcc, MapAcc, State) ->
     Key = get_key_from_command(Command),
     Slot = get_key_slot(Key),
-    {Pool, _Version} = eredis_cluster_monitor:get_pool_by_slot(state, State, Slot),
-    {NewAcc1, NewAcc2} =
-        case lists:keyfind(Pool, 1, CmdAcc) of
-            false ->
-                {[{Pool, [Command]} | CmdAcc], [{Pool, [Index]} | MapAcc]};
-            {Pool, CmdList} ->
-                CmdList2 = [Command | CmdList],
-                CmdAcc2  = lists:keydelete(Pool, 1, CmdAcc),
-                {Pool, MapList} = lists:keyfind(Pool, 1, MapAcc),
-                MapList2 = [Index | MapList],
-                MapAcc2  = lists:keydelete(Pool, 1, MapAcc),
-                {[{Pool, CmdList2} | CmdAcc2], [{Pool, MapList2} | MapAcc2]}
-        end,
-    split_by_pools(T, Index+1, NewAcc1, NewAcc2, State);
+    {Pool, Version} = eredis_cluster_monitor:get_pool_by_slot(state, State, Slot),
+    case Pool of
+        {error, missing_slots} ->
+            % Retry when slots are missing
+            {retry, Version};
+        Pool ->
+            {NewAcc1, NewAcc2} =
+                case lists:keyfind(Pool, 1, CmdAcc) of
+                    false ->
+                        {[{Pool, [Command]} | CmdAcc], [{Pool, [Index]} | MapAcc]};
+                    {Pool, CmdList} ->
+                        CmdList2 = [Command | CmdList],
+                        CmdAcc2  = lists:keydelete(Pool, 1, CmdAcc),
+                        {Pool, MapList} = lists:keyfind(Pool, 1, MapAcc),
+                        MapList2 = [Index | MapList],
+                        MapAcc2  = lists:keydelete(Pool, 1, MapAcc),
+                        {[{Pool, CmdList2} | CmdAcc2], [{Pool, MapList2} | MapAcc2]}
+                end,
+            split_by_pools(T, Index+1, NewAcc1, NewAcc2, State)
+    end;
 split_by_pools([], _Index, CmdAcc, MapAcc, State) ->
     CmdAcc2 = [{Pool, lists:reverse(Commands)} || {Pool, Commands} <- CmdAcc],
     MapAcc2 = [{Pool, lists:reverse(Mapping)} || {Pool, Mapping} <- MapAcc],
