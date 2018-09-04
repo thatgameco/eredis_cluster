@@ -47,8 +47,12 @@ refresh_mapping(ClusterName, Version) ->
 -spec get_state(ClusterName::atom()) -> #state{} | {error, Reason::atom()}.
 get_state(ClusterName) ->
     case ets:lookup(?MODULE, {ClusterName, cluster_state}) of
-        [] -> {error, empty_state};
-        [{{ClusterName, cluster_state}, State}] -> State
+        [] -> 
+            {error, empty_state};
+        [{{ClusterName, cluster_state}, State}] -> 
+            State;
+        _ ->
+            {error, unknown_state}
     end.
 
 get_state_version(State) ->
@@ -70,15 +74,17 @@ get_all_pools(ClusterName) ->
     {PoolName::atom() | undefined | {error, Reason::atom()}, Version::integer()}.
 get_pool_by_slot(state, State, Slot) -> 
     case State of
-        S when is_record(S, state) ->
+        State when is_record(State, state) and (tuple_size(State#state.slots) > Slot) ->
             Index = element(Slot+1,State#state.slots),
             Cluster = element(Index,State#state.slots_maps),
             case Cluster#slots_map.node of 
                 Node when is_record(Node, node) -> {Node#node.pool, State#state.version};
                 _ -> {undefined, State#state.version}
             end;
+        State when is_record(State, state) ->
+            {{error, missing_slots}, get_state_version(State)};
         {error, Reason} ->
-            {undefined, {error, Reason}, 0}
+            {{error, Reason}, 0}
     end;
 get_pool_by_slot(cluster_name, ClusterName, Slot) ->
     State = get_state(ClusterName),

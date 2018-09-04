@@ -186,10 +186,17 @@ query(ClusterName, Transaction, Slot, Counter) ->
 
     {Pool, Version} = eredis_cluster_monitor:get_pool_by_slot(cluster_name, ClusterName, Slot),
 
-    Result = eredis_cluster_pool:transaction(Pool, Transaction),
-    case handle_transaction_result(ClusterName, Result, Version) of 
-        retry -> query(ClusterName, Transaction, Slot, Counter + 1);
-        Result -> Result
+    case Pool of
+        {error, missing_slots} ->
+            % Retry when slots are missing
+            eredis_cluster_monitor:refresh_mapping(ClusterName, Version),
+            query(ClusterName, Transaction, Slot, Counter + 1);
+        Pool ->
+            Result = eredis_cluster_pool:transaction(Pool, Transaction),
+            case handle_transaction_result(ClusterName, Result, Version) of 
+                retry -> query(ClusterName, Transaction, Slot, Counter + 1);
+                Result -> Result
+            end
     end.
 
 handle_transaction_result(ClusterName, Result, Version) ->
