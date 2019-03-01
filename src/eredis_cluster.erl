@@ -14,6 +14,9 @@
 % Specific redis command implementation
 -export([flushdb/1]).
 
+% Pub/sub
+-export([create_subscriber/2, stop_subscriber/1, subscribe/2, ack_message/1]).
+
  % Helper functions
 -export([update_key/3]).
 -export([update_hash_field/4]).
@@ -498,3 +501,41 @@ get_key_from_rest([_,KeyName|_]) when is_list(KeyName) ->
     KeyName;
 get_key_from_rest(_) ->
     undefined.
+
+%% =============================================================================
+%% Pub-sub support on non-cluster node
+%% =============================================================================
+%% @doc Create a new eredis_sub client and connect to a non-clustered server. See eredis_sub module for more details.
+%% @note This function will fail if the given server name has cluster enabled. 
+-spec create_subscriber(SingleServerName::atom(), ControllingProcess::pid()) -> pid().
+create_subscriber(SingleServerName, ControllingProcess) ->
+    [SingleNode] = eredis_cluster_monitor:get_all_nodes(SingleServerName),
+    erlang:display(SingleNode),
+
+    #node{address = Address, port = Port} = SingleNode,
+    Password = application:get_env(eredis_cluster, password, ""),
+
+    % TODO: ReconnectSleep, MaxQueueSize, QueueBehavior
+    {ok, Sub} = eredis_sub:start_link(Address, Port, Password, 1000, infinity, drop),
+    eredis_sub:controlling_process(Sub, ControllingProcess),
+    Sub.
+
+%% @doc: Subscribe to the given channels. Returns immediately. The
+%% result will be delivered to the controlling process as any other
+%% message. Delivers {subscribed, Channel::binary(), pid()}
+-spec subscribe(Sub::pid(), Channels::[atom() | binary()]) -> ok.
+subscribe(Sub, Channels) ->
+    eredis_sub:subscribe(Sub, Channels).
+
+%% @doc Stop the specified eredis_sub. Will unsubscribe all channels before stoppping.
+-spec stop_subscriber(Sub::pid()) -> ok.
+stop_subscriber(Sub) ->
+    Channels = eredis_sub:channels(Sub),
+    eredis_sub:unsubscribe(Sub, Channels),
+    eredis_sub:stop(Sub).
+
+%% @doc: acknowledge the receipt of a pubsub message. each pubsub
+%% message must be acknowledged before the next one is received
+-spec ack_message(Sub::pid()) -> ok.
+ack_message(Sub) ->
+    eredis_sub:ack_message(Sub).

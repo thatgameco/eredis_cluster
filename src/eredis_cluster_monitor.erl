@@ -8,6 +8,7 @@
 -export([get_state/1, get_state_version/1]).
 -export([get_pool_by_slot/3]).
 -export([get_all_pools/1]).
+-export([get_all_nodes/1]).
 
 %% gen_server.
 -export([init/1]).
@@ -63,6 +64,13 @@ get_all_pools(ClusterName) ->
     State = get_state(ClusterName),
     SlotsMapList = tuple_to_list(State#state.slots_maps),
     [SlotsMap#slots_map.node#node.pool || SlotsMap <- SlotsMapList,
+        SlotsMap#slots_map.node =/= undefined].
+
+-spec get_all_nodes(ClusterName::atom()) -> [#node{}].
+get_all_nodes(ClusterName) ->
+    State = get_state(ClusterName),
+    SlotsMapList = tuple_to_list(State#state.slots_maps),
+    [SlotsMap#slots_map.node || SlotsMap <- SlotsMapList,
         SlotsMap#slots_map.node =/= undefined].
 
 %% =============================================================================
