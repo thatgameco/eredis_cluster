@@ -510,7 +510,6 @@ get_key_from_rest(_) ->
 -spec create_subscriber(SingleServerName::atom(), ControllingProcess::pid()) -> pid().
 create_subscriber(SingleServerName, ControllingProcess) ->
     [SingleNode] = eredis_cluster_monitor:get_all_nodes(SingleServerName),
-    erlang:display(SingleNode),
 
     #node{address = Address, port = Port} = SingleNode,
     Password = application:get_env(eredis_cluster, password, ""),
