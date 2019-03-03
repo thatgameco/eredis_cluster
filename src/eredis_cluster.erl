@@ -529,7 +529,7 @@ subscribe(Sub, Channels) ->
 %% @doc Stop the specified eredis_sub. Will unsubscribe all channels before stoppping.
 -spec stop_subscriber(Sub::pid()) -> ok.
 stop_subscriber(Sub) ->
-    Channels = eredis_sub:channels(Sub),
+    {ok, Channels} = eredis_sub:channels(Sub),
     eredis_sub:unsubscribe(Sub, Channels),
     eredis_sub:stop(Sub).
 
