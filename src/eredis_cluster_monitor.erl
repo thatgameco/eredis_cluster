@@ -129,17 +129,21 @@ get_cluster_slots([Node|T]) ->
         {ok,Connection} ->
           case eredis:q(Connection, ["CLUSTER", "SLOTS"]) of
             {error,<<"ERR unknown command 'CLUSTER'">>} ->
+                eredis_cluster_logger:info("Cluster not supported. Trying single node. "),
                 get_cluster_slots_from_single_node(Node);
             {error,<<"ERR This instance has cluster support disabled">>} ->
+                eredis_cluster_logger:info("Cluster disabled. Trying single node. "),
                 get_cluster_slots_from_single_node(Node);
             {ok, ClusterInfo} ->
                 eredis:stop(Connection),
                 ClusterInfo;
-            _ ->
+            Unexpected ->
+                eredis_cluster_logger:info("~s:~p CLUSTER SLOTS returns unexpected result at ~p. Trying next. ", [Node#node.address, Node#node.port, Unexpected]),
                 eredis:stop(Connection),
                 get_cluster_slots(T)
         end;
-        _ ->
+        Error ->
+            eredis_cluster_logger:info("Failed to connect to ~s:~p. Error: ~p. Trying next node. ", [Node#node.address, Node#node.port, Error]),
             get_cluster_slots(T)
   end.
 
