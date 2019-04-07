@@ -241,7 +241,15 @@ init(_Args) ->
 
     try 
         ClusterStatesList = lists:map(fun({ClusterName, InitServer}) -> 
-            {ClusterName, connect_(ClusterName, [InitServer])}
+            eredis_cluster_logger:info("Connecting to Redis Cluster ~s: ~p", [ClusterName, InitServer]),
+            try 
+                {ClusterName, connect_(ClusterName, [InitServer])}
+            catch
+                {error,cannot_connect_to_cluster} ->
+                    eredis_cluster_logger:error("Failed to connect to Redis Cluster ~s: ~p. Stacktrace: ~p", 
+                        [ClusterName, InitServer, erlang:get_stacktrace()]),
+                    throw({error, cannot_connect_to_cluster})
+            end
         end, InitNodes),
         {ok, maps:from_list(ClusterStatesList)}
     catch 

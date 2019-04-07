@@ -12,7 +12,10 @@ start_link() ->
 -spec init([])
 	-> {ok, {{supervisor:strategy(), Intensity::integer(), Period::integer()}, [supervisor:child_spec()]}}.
 init([]) ->
-    Procs = [{eredis_cluster_pool,
+    Procs = [{eredis_cluster_logger,
+                {eredis_cluster_logger, start_link, []},
+                permanent, 5000, worker, [dynamic]},
+            {eredis_cluster_pool,
                 {eredis_cluster_pool, start_link, []},
                 permanent, 5000, supervisor, [dynamic]},
             {eredis_cluster_monitor,

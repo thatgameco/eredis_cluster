@@ -109,7 +109,9 @@ qmn(ClusterName, Commands, Counter) ->
             end;
         {retry, Version} ->
             eredis_cluster_monitor:refresh_mapping(ClusterName, Version),
-            qmn(ClusterName, Commands, Counter + 1)
+            qmn(ClusterName, Commands, Counter + 1);
+        {error, no_connection} ->
+            {error, no_connection}
     end.
 
 qmn2(ClusterName, [{Pool, PoolCommands} | T1], [{Pool, Mapping} | T2], Acc, Version) ->
@@ -131,7 +133,10 @@ qmn2(_ClusterName, [], [], Acc, _) ->
 
 split_by_pools(ClusterName, Commands) ->
     State = eredis_cluster_monitor:get_state(ClusterName),
-    split_by_pools(Commands, 1, [], [], State).
+    case State of 
+        {error, empty_state} -> {error, no_connection};
+        _ -> split_by_pools(Commands, 1, [], [], State)
+    end.
 
 split_by_pools([Command | T], Index, CmdAcc, MapAcc, State) ->
     Key = get_key_from_command(Command),
